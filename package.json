@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "description": "Multi-agent preprint triage and reproducibility assistant for AG2 + Daytona hackathon.",
   "scripts": {
-    "dev": "npm.cmd --prefix frontend run dev",
-    "build": "npm.cmd --prefix frontend run build",
-    "lint": "npm.cmd --prefix frontend run lint"
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "lint": "npm --prefix frontend run lint"
   },
   "engines": {
     "node": ">=20"

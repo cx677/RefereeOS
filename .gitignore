@@ -13,4 +13,5 @@ node_modules/
 frontend/dist/
 outputs/local_repro/
 outputs/runs/
+outputs/beta_runs/
 *.log

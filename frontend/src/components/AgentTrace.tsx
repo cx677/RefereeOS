@@ -35,7 +35,7 @@ const emptyTrace: AgentTraceItem[] = [
   { agent: "methods_statistics_agent", label: "Assess methodology and statistics risk", status: "pending" },
   { agent: "integrity_agent", label: "Scan manuscript for prompt-injection and suspicious instructions", status: "pending" },
   { agent: "novelty_literature_agent", label: "Attach lightweight related-work risks", status: "pending" },
-  { agent: "reproducibility_agent", label: "Run Daytona sandbox with OpenAI GPT-5.5", status: "pending" },
+  { agent: "reproducibility_agent", label: "Run Daytona sandbox with Beta LLM", status: "pending" },
   { agent: "area_chair_agent", label: "Synthesize reviewer-prep packet", status: "pending" },
 ];
 

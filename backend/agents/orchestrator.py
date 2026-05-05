@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from backend.config import any_llm_api_key, build_llm_config_dict, classify_claim, gemini_api_key
 from backend.metadata.related_work import get_related_work
 from backend.parsing.injection_scan import scan_for_prompt_injection
 from backend.parsing.paper_parser import FIXTURES, load_fixture_text, parse_manuscript_text
@@ -61,17 +62,18 @@ def detect_ag2_runtime() -> AG2Runtime:
             llm_model=model,
             status="disabled",
         )
-    if not _gemini_api_key():
+    if not any_llm_api_key():
         return AG2Runtime(
             True,
             version,
-            f"AG2 {version} installed; Gemini synthesis unavailable (missing key)",
+            f"AG2 {version} installed; LLM synthesis unavailable (missing API key)",
             agents,
             llm_model=model,
             status="missing_key",
         )
 
-    return AG2Runtime(True, version, f"AG2 {version} + Gemini {model}", agents, True, model, "ready")
+    provider = "Gemini" if gemini_api_key() else "DeepSeek"
+    return AG2Runtime(True, version, f"AG2 {version} + {provider} {model}", agents, True, model, "ready")
 
 
 def analyze_fixture(fixture_id: str = "clean", field_domain: str | None = None) -> dict[str, Any]:
@@ -447,9 +449,11 @@ def _ag2_area_chair_synthesis(
     Uses autogen.beta.Agent for the area_chair and method_critic, with
     method_critic exposed as a tool to area_chair (agent-as-tool pattern).
     Falls back to legacy ConversableAgent if autogen.beta is unavailable.
+
+    When called from an async context (e.g. FastAPI), prefer
+    ``_ag2_area_chair_synthesis_async()`` instead to avoid event-loop issues.
     """
     import asyncio
-    import json as _json
 
     llm_config = _build_llm_config(runtime)
     if llm_config is None:
@@ -458,30 +462,22 @@ def _ag2_area_chair_synthesis(
     prompt = _area_chair_prompt(board, recommendation, expertise)
 
     try:
-        return asyncio.get_event_loop().run_until_complete(_beta_synthesis(prompt, llm_config))
+        loop = asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(_beta_synthesis(prompt, llm_config))
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, _beta_synthesis(prompt, llm_config))
+            return future.result()
+    return asyncio.run(_beta_synthesis(prompt, llm_config))
 
 
 def _build_llm_config(runtime: AG2Runtime) -> dict[str, str] | None:
     """Build LLM config dict. Prefers Gemini, falls back to DeepSeek."""
-    gemini_key = _gemini_api_key()
-    if gemini_key:
-        return {
-            "model": runtime.llm_model or os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
-            "api_key": gemini_key,
-            "api_type": "google",
-            "base_url": "",
-        }
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-    if deepseek_key:
-        return {
-            "model": os.getenv("AG2_MODEL", "deepseek-v4-pro"),
-            "api_key": deepseek_key,
-            "api_type": "openai",
-            "base_url": os.getenv("AG2_BASE_URL", "https://api.deepseek.com/v1"),
-        }
-    return None
+    return build_llm_config_dict(runtime.llm_model)
 
 
 async def _beta_synthesis(prompt: str, llm_config: dict[str, str]) -> dict[str, str]:
@@ -505,37 +501,9 @@ async def _beta_synthesis(prompt: str, llm_config: dict[str, str]) -> dict[str, 
             extra_body={"thinking": {"type": "disabled"}} if "deepseek" in model.lower() else {},
         )
 
-    # Method critic agent -- exposed as a tool to area_chair
-    method_critic = Agent(
-        "method_critic",
-        prompt=(
-            "You are a rigorous methodology critic for scientific peer review. "
-            "Given the review evidence, identify the top methodological weakness. "
-            "Output exactly ONE concern in 2-3 sentences. Focus on statistical, "
-            "experimental design, or reproducibility issues."
-        ),
-        config=config,
-    )
-
-    # Area chair agent -- uses method_critic as a tool
-    area_chair = Agent(
-        "area_chair",
-        prompt=(
-            "You are the RefereeOS area chair synthesis agent. "
-            "Summarize review-prep evidence for a human editor. "
-            "First, use the 'critique_methods' tool to get methodology feedback. "
-            "Then produce a JSON response with keys: summary, risk_summary, human_focus. "
-            "Do NOT recommend accepting or rejecting publication. "
-            "Do NOT include accept/reject language."
-        ),
-        config=config,
-    )
-
-    critique_tool = method_critic.as_tool(
-        name="critique_methods",
-        description="Submit review evidence to the method critic. Returns a focused methodological weakness.",
-    )
-    area_chair.tools.add(critique_tool)
+    # Use shared agent factory for consistent prompts and tool names
+    from backend.agents.agent_factory import create_agents_for_synthesis
+    method_critic, area_chair = create_agents_for_synthesis(config)
 
     reply = await area_chair.ask(prompt)
     text = reply.body.strip() if hasattr(reply, "body") else str(reply).strip()
@@ -600,8 +568,7 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _gemini_api_key() -> str:
-    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+
 
 
 def _claim_ids_for_concern(board: dict[str, Any], category: str, concern_text: str) -> list[str]:
@@ -638,14 +605,7 @@ def _next_id(board: dict[str, Any], prefix: str) -> str:
 
 
 def _claim_type(claim: str) -> str:
-    lowered = claim.lower()
-    if "causal" in lowered or "proves" in lowered:
-        return "causal"
-    if "f1" in lowered or "benchmark" in lowered or "outperform" in lowered:
-        return "benchmark"
-    if "method" in lowered or "feature" in lowered:
-        return "methodological"
-    return "empirical"
+    return classify_claim(claim)
 
 
 def _evidence_for_claim(claim: str, paper: dict[str, Any]) -> str:

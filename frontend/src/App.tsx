@@ -70,7 +70,7 @@ export default function App() {
       <header className="topbar">
         <div className="masthead">
           <img className="wordmark" src="/wordmark.svg" alt="RefereeOS" />
-          <p className="eyebrow">AG2 · Daytona · GPT-5.5 Review Operations</p>
+          <p className="eyebrow">AG2 · Daytona · Beta LLM Review Operations</p>
         </div>
         <div className="sponsor-strip" aria-label="Sponsor integration status">
           <span title="AG2 synthesizes the area-chair packet when enabled">
@@ -79,8 +79,8 @@ export default function App() {
           <span title="Daytona runs the reproducibility sandbox">
             <FlaskConical size={16} /> Daytona
           </span>
-          <span title="OpenAI GPT-5.5 interprets the Daytona reproducibility receipt">
-            <ShieldCheck size={16} /> GPT-5.5
+          <span title="Beta LLM interprets the Daytona reproducibility receipt">
+            <ShieldCheck size={16} /> Beta LLM
           </span>
         </div>
       </header>

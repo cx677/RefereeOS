@@ -103,5 +103,117 @@ The paper reports macro F1 of 0.87.
         self.assertTrue(board["final_packet"]["markdown"])
 
 
+class BetaFeatureTests(unittest.TestCase):
+    """Tests for Beta-agent related functions."""
+
+    def test_build_llm_config_prefers_gemini(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"GEMINI_API_KEY": "fake-gemini", "DEEPSEEK_API_KEY": "", "AG2_MODEL": ""},
+            clear=False,
+        ):
+            cfg = orchestrator._build_llm_config(
+                orchestrator.AG2Runtime(True, "x", "x", [], True, "gemini-3.1-pro-preview", "ready")
+            )
+        self.assertEqual(cfg["api_type"], "google")
+        self.assertEqual(cfg["api_key"], "fake-gemini")
+
+    def test_build_llm_config_falls_back_to_deepseek(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"GEMINI_API_KEY": "", "GOOGLE_GEMINI_API_KEY": "", "GOOGLE_API_KEY": "",
+             "DEEPSEEK_API_KEY": "fake-ds"},
+            clear=False,
+        ):
+            cfg = orchestrator._build_llm_config(
+                orchestrator.AG2Runtime(True, "x", "x", [], True, "deepseek-v4-pro", "ready")
+            )
+        self.assertEqual(cfg["api_type"], "openai")
+        self.assertEqual(cfg["api_key"], "fake-ds")
+        self.assertIn("base_url", cfg)
+
+    def test_build_llm_config_returns_none_without_keys(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"GEMINI_API_KEY": "", "GOOGLE_GEMINI_API_KEY": "", "GOOGLE_API_KEY": "",
+             "DEEPSEEK_API_KEY": ""},
+            clear=False,
+        ):
+            cfg = orchestrator._build_llm_config(
+                orchestrator.AG2Runtime(True, "x", "x", [], True, "deepseek-v4-pro", "ready")
+            )
+        self.assertIsNone(cfg)
+
+    def test_detect_ag2_runtime_ready_with_deepseek_only(self) -> None:
+        """P1-5 regression: detect_ag2_runtime should report ready when only DeepSeek key is set."""
+        with patch.dict(
+            os.environ,
+            {"REFEREEOS_ENABLE_AG2_LLM": "true",
+             "GEMINI_API_KEY": "", "GOOGLE_GEMINI_API_KEY": "", "GOOGLE_API_KEY": "",
+             "DEEPSEEK_API_KEY": "fake-ds"},
+            clear=False,
+        ):
+            rt = orchestrator.detect_ag2_runtime()
+        self.assertEqual(rt.status, "ready")
+        self.assertTrue(rt.llm_enabled)
+
+    def test_parse_synthesis_with_json(self) -> None:
+        import json as _json
+        raw = _json.dumps({"summary": "Looks good", "risk_summary": "Low", "human_focus": "Check stats"})
+        result = orchestrator._parse_synthesis(raw, "deepseek-v4-pro")
+        self.assertEqual(result["summary"], "Looks good")
+        self.assertEqual(result["risk_summary"], "Low")
+
+    def test_parse_synthesis_with_plain_text(self) -> None:
+        raw = "This paper has some issues with methodology."
+        result = orchestrator._parse_synthesis(raw, "gemini-3.1-pro-preview")
+        self.assertEqual(result["source"], "AG2 Beta + gemini-3.1-pro-preview")
+        self.assertTrue(len(result["summary"]) > 0)
+
+
+class BetaAsyncTests(unittest.IsolatedAsyncioTestCase):
+    """Async tests for Beta-agent synthesis functions."""
+
+    async def test_beta_synthesis_with_mocked_agent(self) -> None:
+        """_beta_synthesis() should call area_chair.ask and parse the result."""
+        from unittest.mock import AsyncMock
+
+        class _FakeReply:
+            body = '{"summary": "OK", "risk_summary": "Low", "human_focus": "Check methods"}'
+
+        mock_agent = AsyncMock()
+        mock_agent.ask.return_value = _FakeReply()
+
+        from backend.agents.agent_factory import create_agents_for_synthesis
+        from autogen.beta.config import OpenAIConfig
+
+        fake_config = OpenAIConfig(model="deepseek-v4-pro", api_key="fake", base_url="https://api.deepseek.com/v1")
+        method_critic, area_chair = create_agents_for_synthesis(fake_config)
+
+        # Patch area_chair.ask to return a mock reply
+        with patch.object(area_chair, "ask", new_callable=AsyncMock) as mock_ask:
+            mock_ask.return_value = _FakeReply()
+            result = await orchestrator._beta_synthesis(
+                "test prompt",
+                {"model": "deepseek-v4-pro", "api_key": "fake",
+                 "api_type": "openai", "base_url": "https://api.deepseek.com/v1"},
+            )
+        self.assertEqual(result["summary"], "OK")
+        self.assertEqual(result["risk_summary"], "Low")
+
+    async def test_ag2_area_chair_synthesis_with_mocked_beta(self) -> None:
+        """_ag2_area_chair_synthesis() should delegate to _beta_synthesis."""
+        with patch.object(orchestrator, "_beta_synthesis", new_callable=AsyncMock) as mock_beta:
+            mock_beta.return_value = {"source": "test", "summary": "OK", "risk_summary": "", "human_focus": ""}
+            rt = orchestrator.AG2Runtime(True, "1.0", "test", [], True, "deepseek-v4-pro", "ready")
+            result = orchestrator._ag2_area_chair_synthesis(
+                {"paper": {}, "claims": [], "concerns": [], "repro_checks": []},
+                "Ready for human review",
+                ["CS"],
+                rt,
+            )
+        self.assertEqual(result["summary"], "OK")
+
+
 if __name__ == "__main__":
     unittest.main()

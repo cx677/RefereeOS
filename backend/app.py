@@ -20,6 +20,34 @@ from backend.parsing.paper_parser import extract_pdf_text, list_fixtures, load_f
 from backend.storage.evidence_board import run_store
 
 
+async def _get_paper_text(
+    file: UploadFile | None,
+    fixture_id: str,
+    field_domain: str | None,
+    custom_artifact: dict | None,
+) -> tuple[str, str, dict]:
+    """Extract paper text, source label, and fixture_meta from request inputs."""
+    if file and file.filename:
+        if file.content_type == "application/pdf" or file.filename.lower().endswith(".pdf"):
+            text = extract_pdf_text(file.file)
+        else:
+            text = (await file.read()).decode("utf-8", errors="ignore")
+        _, fixture_meta = load_fixture_text("clean")
+        fixture_meta["fixture_id"] = "uploaded"
+        source = f"uploaded_file:{file.filename}"
+    elif custom_artifact:
+        text, fixture_meta = load_fixture_text(fixture_id)
+        fixture_meta.update(custom_artifact)
+        source = f"sample_fixture:{fixture_meta['fixture_id']}:custom_repro_artifact"
+    else:
+        text, fixture_meta = load_fixture_text(fixture_id)
+        source = f"sample_fixture:{fixture_meta['fixture_id']}"
+
+    if custom_artifact:
+        fixture_meta.update(custom_artifact)
+    return text, source, fixture_meta
+
+
 app = FastAPI(
     title="RefereeOS API",
     description="AG2 + Daytona multi-agent preprint triage and reproducibility assistant.",
@@ -55,29 +83,34 @@ async def analyze(
     script_file: Annotated[UploadFile | None, File()] = None,
 ) -> dict:
     custom_artifact = await _read_custom_artifact(artifact_file, script_file, reported_result)
+    text, source, fixture_meta = await _get_paper_text(file, fixture_id, field_domain, custom_artifact)
+    board = analyze_text(text, source=source, fixture_meta=fixture_meta, field_domain=field_domain)
+    run = run_store.create(board)
+    return run
 
-    if file and file.filename:
-        if file.content_type == "application/pdf" or file.filename.lower().endswith(".pdf"):
-            text = extract_pdf_text(file.file)
-        else:
-            text = (await file.read()).decode("utf-8", errors="ignore")
-        _, fixture_meta = load_fixture_text("clean")
-        fixture_meta["fixture_id"] = "uploaded"
-        if custom_artifact:
-            fixture_meta.update(custom_artifact)
-        board = analyze_text(text, source=f"uploaded_file:{file.filename}", fixture_meta=fixture_meta, field_domain=field_domain)
-    else:
-        if custom_artifact:
-            text, fixture_meta = load_fixture_text(fixture_id)
-            fixture_meta.update(custom_artifact)
-            board = analyze_text(
-                text,
-                source=f"sample_fixture:{fixture_meta['fixture_id']}:custom_repro_artifact",
-                fixture_meta=fixture_meta,
-                field_domain=field_domain,
-            )
-        else:
-            board = analyze_fixture(fixture_id=fixture_id, field_domain=field_domain)
+
+@app.post("/api/analyze/beta")
+async def analyze_beta(
+    fixture_id: Annotated[str, Form()] = "clean",
+    field_domain: Annotated[str | None, Form()] = None,
+    file: Annotated[UploadFile | None, File()] = None,
+) -> dict:
+    """Run the full 3-agent AG2 Beta pipeline (claim_extractor + method_critic + area_chair)."""
+    import asyncio
+
+    try:
+        from ag2_reviewer import review_paper
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="ag2_reviewer module not available. Ensure ag2[openai] is installed.",
+        )
+
+    text, source, fixture_meta = await _get_paper_text(file, fixture_id, field_domain, None)
+    try:
+        board = await review_paper(text, source=source, fixture_meta=fixture_meta)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Beta pipeline failed: {exc}")
 
     run = run_store.create(board)
     return run
