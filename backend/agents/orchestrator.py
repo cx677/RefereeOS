@@ -442,45 +442,118 @@ def _ag2_area_chair_synthesis(
     expertise: list[str],
     runtime: AG2Runtime,
 ) -> dict[str, str]:
-    import autogen  # type: ignore
+    """Area-chair synthesis using AG2 Beta agents with agent-as-tool collaboration.
 
-    api_key = _gemini_api_key()
-    if not api_key:
-        raise RuntimeError("Gemini API key is not configured")
+    Uses autogen.beta.Agent for the area_chair and method_critic, with
+    method_critic exposed as a tool to area_chair (agent-as-tool pattern).
+    Falls back to legacy ConversableAgent if autogen.beta is unavailable.
+    """
+    import asyncio
+    import json as _json
 
-    model = runtime.llm_model or os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
-    llm_config = {
-        "config_list": [
-            {
-                "model": model,
-                "api_type": "google",
-                "api_key": api_key,
-            }
-        ],
-        "temperature": 0,
-    }
-    agent = autogen.ConversableAgent(
-        name="area_chair_agent",
-        system_message=(
-            "You are the RefereeOS area chair synthesis agent. Summarize review-prep evidence for a human editor. "
-            "Do not recommend accepting or rejecting publication."
+    llm_config = _build_llm_config(runtime)
+    if llm_config is None:
+        raise RuntimeError("No LLM API key configured (Gemini or DeepSeek)")
+
+    prompt = _area_chair_prompt(board, recommendation, expertise)
+
+    try:
+        return asyncio.get_event_loop().run_until_complete(_beta_synthesis(prompt, llm_config))
+    except RuntimeError:
+        return asyncio.run(_beta_synthesis(prompt, llm_config))
+
+
+def _build_llm_config(runtime: AG2Runtime) -> dict[str, str] | None:
+    """Build LLM config dict. Prefers Gemini, falls back to DeepSeek."""
+    gemini_key = _gemini_api_key()
+    if gemini_key:
+        return {
+            "model": runtime.llm_model or os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
+            "api_key": gemini_key,
+            "api_type": "google",
+            "base_url": "",
+        }
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    if deepseek_key:
+        return {
+            "model": os.getenv("AG2_MODEL", "deepseek-v4-pro"),
+            "api_key": deepseek_key,
+            "api_type": "openai",
+            "base_url": os.getenv("AG2_BASE_URL", "https://api.deepseek.com/v1"),
+        }
+    return None
+
+
+async def _beta_synthesis(prompt: str, llm_config: dict[str, str]) -> dict[str, str]:
+    """Run area-chair synthesis with AG2 Beta agent-as-tool pattern."""
+    from autogen.beta import Agent  # type: ignore
+    from autogen.beta.config import OpenAIConfig, GeminiConfig  # type: ignore
+
+    api_type = llm_config.get("api_type", "openai")
+    model = llm_config["model"]
+    api_key = llm_config["api_key"]
+    base_url = llm_config.get("base_url", "")
+
+    if api_type == "google":
+        config = GeminiConfig(model=model, api_key=api_key, temperature=0)
+    else:
+        config = OpenAIConfig(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=0,
+            extra_body={"thinking": {"type": "disabled"}} if "deepseek" in model.lower() else {},
+        )
+
+    # Method critic agent -- exposed as a tool to area_chair
+    method_critic = Agent(
+        "method_critic",
+        prompt=(
+            "You are a rigorous methodology critic for scientific peer review. "
+            "Given the review evidence, identify the top methodological weakness. "
+            "Output exactly ONE concern in 2-3 sentences. Focus on statistical, "
+            "experimental design, or reproducibility issues."
         ),
-        llm_config=llm_config,
-        human_input_mode="NEVER",
-        code_execution_config=False,
+        config=config,
     )
-    reply = agent.generate_reply(messages=[{"role": "user", "content": _area_chair_prompt(board, recommendation, expertise)}])
-    text = _reply_to_text(reply)
+
+    # Area chair agent -- uses method_critic as a tool
+    area_chair = Agent(
+        "area_chair",
+        prompt=(
+            "You are the RefereeOS area chair synthesis agent. "
+            "Summarize review-prep evidence for a human editor. "
+            "First, use the 'critique_methods' tool to get methodology feedback. "
+            "Then produce a JSON response with keys: summary, risk_summary, human_focus. "
+            "Do NOT recommend accepting or rejecting publication. "
+            "Do NOT include accept/reject language."
+        ),
+        config=config,
+    )
+
+    critique_tool = method_critic.as_tool(
+        name="critique_methods",
+        description="Submit review evidence to the method critic. Returns a focused methodological weakness.",
+    )
+    area_chair.tools.add(critique_tool)
+
+    reply = await area_chair.ask(prompt)
+    text = reply.body.strip() if hasattr(reply, "body") else str(reply).strip()
+    return _parse_synthesis(text, model)
+
+
+def _parse_synthesis(text: str, model: str) -> dict[str, str]:
+    """Parse synthesis output into structured dict."""
     parsed = _parse_json_object(text)
     if parsed:
         return {
-            "source": f"AG2 + Gemini {model}",
+            "source": f"AG2 Beta + {model}",
             "summary": str(parsed.get("summary", "")).strip(),
             "risk_summary": str(parsed.get("risk_summary", "")).strip(),
             "human_focus": str(parsed.get("human_focus", "")).strip(),
         }
     return {
-        "source": f"AG2 + Gemini {model}",
+        "source": f"AG2 Beta + {model}",
         "summary": text[:1200],
         "risk_summary": "",
         "human_focus": "",
