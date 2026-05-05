@@ -14,13 +14,13 @@ def build_claim_extractor(config) -> Agent:
     """Build the claim-extractor agent."""
     return Agent(
         name="claim_extractor",
-        system_message=(
+        system_prompt=(
             "You are a scientific-claim extraction agent for peer review. "
             "Given a paper excerpt, extract ALL main scientific claims. "
             "Output ONE claim per line, each starting with 'Claim N:'. "
             "Be comprehensive — capture every verifiable claim."
         ),
-        config=config,
+        llm_config=config,
     )
 
 
@@ -28,13 +28,13 @@ def build_method_critic(config) -> Agent:
     """Build the method-critic agent (stateless tool target)."""
     return Agent(
         name="method_critic",
-        system_message=(
+        system_prompt=(
             "You are a rigorous methodology critic for scientific peer review. "
             "Given a scientific claim, identify the TOP methodological weakness "
             "that could invalidate it. Output exactly ONE concern in 2-3 sentences. "
             "Focus on statistical power, experimental design, or reproducibility."
         ),
-        config=config,
+        llm_config=config,
     )
 
 
@@ -42,7 +42,7 @@ def build_area_chair(config, critique_tool) -> Agent:
     """Build the area-chair synthesis agent with ``critique_methods`` tool."""
     return Agent(
         name="area_chair",
-        system_message=(
+        system_prompt=(
             "You are the RefereeOS area-chair synthesis agent. "
             "Your job is to prepare a structured evidence summary for a human editor. "
             "First, use the 'critique_methods' tool to collect methodological "
@@ -53,7 +53,7 @@ def build_area_chair(config, critique_tool) -> Agent:
             "Do NOT make final publication accept/reject decisions. "
             "Frame the verdict as a recommendation for human reviewers."
         ),
-        config=config,
+        llm_config=config,
     )
 
 
