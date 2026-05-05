@@ -18,8 +18,8 @@
 ## 4. What I added
 - claim_extractor Agent (new)
 - method_critic Agent (new)
-- rea_chair Agent (new with tool integration)
-- g2_reviewer.py – complete AG2 Beta pipeline
+- area_chair Agent (new with tool integration)
+- ag2_reviewer.py – complete AG2 Beta pipeline
 
 ## 5. License
 - Base repo: no explicit license (educational fair use)

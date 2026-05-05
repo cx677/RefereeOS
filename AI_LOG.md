@@ -34,9 +34,9 @@
 
 ### Iteration 4 — 11:30 — Add tool-based collaboration
 - **Prompt:** "Expose method_critic as a tool to area_chair"
-- **Output:** s_tool + ppend pattern
+- **Output:** as_tool + append pattern
 - **Adopted:** ✅
-- **Fix:** Changed dd to ppend
+- **Fix:** Changed as_tool to append
 
 ### Iteration 5 — 12:00 — Fix DeepSeek reasoning error
 - **Prompt:** "DeepSeek-V4-Pro errors with reasoning_content"
