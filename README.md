@@ -92,14 +92,14 @@ flowchart TD
 git clone https://github.com/cx677/RefereeOS
 cd RefereeOS
 
-# 2. Python environment (3.10+)
+# 2. Python environment (3.9+)
 python -m venv venv
 .\venv\Scripts\activate        # Windows
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 3. Configure API key
+# 3. Configure API key (required before running)
 copy .env.example .env
-# Edit .env: set DEEPSEEK_API_KEY (or GEMINI_API_KEY)
+# Edit .env and set DEEPSEEK_API_KEY=sk-xxx (or GEMINI_API_KEY)
 
 # 4a. Run standalone Beta pipeline (fastest start)
 python ag2_reviewer.py                  # clean paper
