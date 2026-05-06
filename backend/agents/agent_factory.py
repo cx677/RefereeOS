@@ -7,11 +7,21 @@ place avoids prompt/tool-name drift between the two entry points.
 
 from __future__ import annotations
 
-from autogen.beta import Agent  # type: ignore
+
+def _Agent():
+    """Lazily import autogen.beta.Agent so that the module can be imported
+    in environments where autogen.beta is not installed (e.g. CI unit tests
+    that mock this module at the call site).
+    """
+    from autogen.beta import Agent  # type: ignore  # noqa: PLC0415
+    return Agent
 
 
-def build_claim_extractor(config) -> Agent:
+
+
+def build_claim_extractor(config):
     """Build the claim-extractor agent."""
+    Agent = _Agent()
     return Agent(
         name="claim_extractor",
         system_prompt=(
@@ -24,8 +34,9 @@ def build_claim_extractor(config) -> Agent:
     )
 
 
-def build_method_critic(config) -> Agent:
+def build_method_critic(config):
     """Build the method-critic agent (stateless tool target)."""
+    Agent = _Agent()
     return Agent(
         name="method_critic",
         system_prompt=(
@@ -38,8 +49,9 @@ def build_method_critic(config) -> Agent:
     )
 
 
-def build_area_chair(config, critique_tool) -> Agent:
+def build_area_chair(config, critique_tool):
     """Build the area-chair synthesis agent with ``critique_methods`` tool."""
+    Agent = _Agent()
     return Agent(
         name="area_chair",
         system_prompt=(
@@ -57,7 +69,7 @@ def build_area_chair(config, critique_tool) -> Agent:
     )
 
 
-def make_critique_tool(method_critic: Agent, name: str = "critique_methods"):
+def make_critique_tool(method_critic, name: str = "critique_methods"):
     """Wrap ``method_critic`` as a tool and return it.
 
     The tool is named ``critique_methods`` (plural) consistently in both
@@ -72,7 +84,7 @@ def make_critique_tool(method_critic: Agent, name: str = "critique_methods"):
     )
 
 
-def create_agents_for_pipeline(config) -> tuple[Agent, Agent, Agent]:
+def create_agents_for_pipeline(config):
     """Create ``(claim_extractor, method_critic, area_chair)`` for the
     three-agent review pipeline used by ``ag2_reviewer.py``."""
     claim_extractor = build_claim_extractor(config)
@@ -83,10 +95,11 @@ def create_agents_for_pipeline(config) -> tuple[Agent, Agent, Agent]:
     return claim_extractor, method_critic, area_chair
 
 
-def create_agents_for_synthesis(config) -> tuple[Agent, Agent]:
+def create_agents_for_synthesis(config):
     """Create ``(method_critic, area_chair)`` for ``_beta_synthesis()``."""
     method_critic = build_method_critic(config)
     tool = make_critique_tool(method_critic)
     area_chair = build_area_chair(config, tool)
     area_chair.tools.add(tool)
     return method_critic, area_chair
+

@@ -61,15 +61,24 @@ def detect_ag2_runtime() -> AG2Runtime:
             llm_model=model,
             status="disabled",
         )
-    if not _gemini_api_key():
+
+    # Accept either Gemini or DeepSeek key — either is sufficient for LLM synthesis
+    gemini_key = _gemini_api_key()
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "")
+    if not gemini_key and not deepseek_key:
         return AG2Runtime(
             True,
             version,
-            f"AG2 {version} installed; Gemini synthesis unavailable (missing key)",
+            f"AG2 {version} installed; LLM synthesis unavailable (missing key)",
             agents,
             llm_model=model,
             status="missing_key",
         )
+
+    # Prefer Gemini; fall back to DeepSeek
+    if deepseek_key and not gemini_key:
+        ds_model = os.getenv("AG2_MODEL", "deepseek-v4-pro")
+        return AG2Runtime(True, version, f"AG2 {version} + DeepSeek {ds_model}", agents, True, ds_model, "ready")
 
     return AG2Runtime(True, version, f"AG2 {version} + Gemini {model}", agents, True, model, "ready")
 
@@ -436,57 +445,6 @@ def _area_chair_label(runtime: AG2Runtime) -> str:
     return "Synthesize reviewer-prep packet with deterministic fallback"
 
 
-def _ag2_area_chair_synthesis(
-    board: dict[str, Any],
-    recommendation: str,
-    expertise: list[str],
-    runtime: AG2Runtime,
-) -> dict[str, str]:
-    import autogen  # type: ignore
-
-    api_key = _gemini_api_key()
-    if not api_key:
-        raise RuntimeError("Gemini API key is not configured")
-
-    model = runtime.llm_model or os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
-    llm_config = {
-        "config_list": [
-            {
-                "model": model,
-                "api_type": "google",
-                "api_key": api_key,
-            }
-        ],
-        "temperature": 0,
-    }
-    agent = autogen.ConversableAgent(
-        name="area_chair_agent",
-        system_prompt=(
-            "You are the RefereeOS area chair synthesis agent. Summarize review-prep evidence for a human editor. "
-            "Do not recommend accepting or rejecting publication."
-        ),
-        llm_config=llm_config,
-        human_input_mode="NEVER",
-        code_execution_config=False,
-    )
-    reply = agent.generate_reply(messages=[{"role": "user", "content": _area_chair_prompt(board, recommendation, expertise)}])
-    text = _reply_to_text(reply)
-    parsed = _parse_json_object(text)
-    if parsed:
-        return {
-            "source": f"AG2 + Gemini {model}",
-            "summary": str(parsed.get("summary", "")).strip(),
-            "risk_summary": str(parsed.get("risk_summary", "")).strip(),
-            "human_focus": str(parsed.get("human_focus", "")).strip(),
-        }
-    return {
-        "source": f"AG2 + Gemini {model}",
-        "summary": text[:1200],
-        "risk_summary": "",
-        "human_focus": "",
-    }
-
-
 def _area_chair_prompt(board: dict[str, Any], recommendation: str, expertise: list[str]) -> str:
     digest = {
         "paper": board["paper"],
@@ -579,3 +537,149 @@ def _evidence_for_claim(claim: str, paper: dict[str, Any]) -> str:
     if "f1" in claim.lower():
         return paper.get("results_summary") or paper.get("abstract")
     return paper.get("abstract")
+
+
+# ---------------------------------------------------------------------------
+# Beta / LLM helpers (used by tests and _ag2_area_chair_synthesis)
+# ---------------------------------------------------------------------------
+
+def _build_llm_config(runtime: AG2Runtime) -> dict[str, Any] | None:
+    """Build a minimal LLM config dict from the runtime descriptor.
+
+    Returns *None* when no valid API key is available.
+    """
+    gemini_key = _gemini_api_key()
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "")
+
+    if gemini_key:
+        return {
+            "api_type": "google",
+            "api_key": gemini_key,
+            "model": runtime.llm_model or "gemini-3.1-pro-preview",
+        }
+    if deepseek_key:
+        return {
+            "api_type": "openai",
+            "api_key": deepseek_key,
+            "model": runtime.llm_model or os.getenv("AG2_MODEL", "deepseek-v4-pro"),
+            "base_url": "https://api.deepseek.com/v1",
+        }
+    return None
+
+
+def _parse_synthesis(raw: str, model: str) -> dict[str, str]:
+    """Parse a synthesis reply (JSON or plain text) into a standard dict."""
+    parsed = _parse_json_object(raw)
+    if parsed and isinstance(parsed, dict) and "summary" in parsed:
+        return {
+            "source": f"AG2 Beta + {model}",
+            "summary": str(parsed.get("summary", "")).strip(),
+            "risk_summary": str(parsed.get("risk_summary", "")).strip(),
+            "human_focus": str(parsed.get("human_focus", "")).strip(),
+        }
+    return {
+        "source": f"AG2 Beta + {model}",
+        "summary": raw.strip()[:1200],
+        "risk_summary": "",
+        "human_focus": "",
+    }
+
+
+async def _beta_synthesis(prompt: str, llm_config: dict[str, Any]) -> dict[str, str]:
+    """Run AG2 Beta area-chair synthesis asynchronously.
+
+    Imports ``autogen.beta`` lazily so that the module loads fine in
+    environments where the beta extras are not installed.
+    """
+    from backend.agents.agent_factory import create_agents_for_synthesis  # noqa: PLC0415
+
+    try:
+        from autogen.beta.config import OpenAIConfig  # type: ignore  # noqa: PLC0415
+    except ImportError:
+        # Fallback: construct a plain config object accepted by ag2 beta builds
+        class OpenAIConfig:  # type: ignore
+            def __init__(self, **kw):
+                for k, v in kw.items():
+                    setattr(self, k, v)
+
+    config = OpenAIConfig(
+        model=llm_config.get("model", ""),
+        api_key=llm_config.get("api_key", ""),
+        base_url=llm_config.get("base_url", "https://api.openai.com/v1"),
+    )
+    _method_critic, area_chair = create_agents_for_synthesis(config)
+    reply = await area_chair.ask(prompt)
+    raw = reply.body if hasattr(reply, "body") else str(reply)
+    return _parse_synthesis(raw, llm_config.get("model", "unknown"))
+
+
+def _ag2_area_chair_synthesis(
+    board: dict[str, Any],
+    recommendation: str,
+    expertise: list[str],
+    runtime: AG2Runtime,
+) -> dict[str, str]:
+    """Dispatch to ``_beta_synthesis`` (async) or the legacy ConversableAgent path."""
+    import asyncio  # noqa: PLC0415
+
+    llm_cfg = _build_llm_config(runtime)
+    if llm_cfg is None:
+        raise RuntimeError("No LLM API key configured for area-chair synthesis")
+
+    prompt = _area_chair_prompt(board, recommendation, expertise)
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures  # noqa: PLC0415
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, _beta_synthesis(prompt, llm_cfg))
+                return future.result(timeout=120)
+        return loop.run_until_complete(_beta_synthesis(prompt, llm_cfg))
+    except Exception:
+        # Fall back to legacy ConversableAgent (Gemini only)
+        return _legacy_ag2_synthesis(board, recommendation, expertise, runtime)
+
+
+def _legacy_ag2_synthesis(
+    board: dict[str, Any],
+    recommendation: str,
+    expertise: list[str],
+    runtime: AG2Runtime,
+) -> dict[str, str]:
+    """Legacy ConversableAgent path (kept for backward compatibility)."""
+    import autogen  # type: ignore  # noqa: PLC0415
+
+    api_key = _gemini_api_key()
+    if not api_key:
+        raise RuntimeError("Gemini API key is not configured")
+
+    model = runtime.llm_model or os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+    llm_config = {
+        "config_list": [{"model": model, "api_type": "google", "api_key": api_key}],
+        "temperature": 0,
+    }
+    agent = autogen.ConversableAgent(
+        name="area_chair_agent",
+        system_prompt=(
+            "You are the RefereeOS area chair synthesis agent. Summarize review-prep evidence for a human editor. "
+            "Do not recommend accepting or rejecting publication."
+        ),
+        llm_config=llm_config,
+        human_input_mode="NEVER",
+        code_execution_config=False,
+    )
+    reply = agent.generate_reply(
+        messages=[{"role": "user", "content": _area_chair_prompt(board, recommendation, expertise)}]
+    )
+    text = _reply_to_text(reply)
+    parsed = _parse_json_object(text)
+    if parsed:
+        return {
+            "source": f"AG2 + Gemini {model}",
+            "summary": str(parsed.get("summary", "")).strip(),
+            "risk_summary": str(parsed.get("risk_summary", "")).strip(),
+            "human_focus": str(parsed.get("human_focus", "")).strip(),
+        }
+    return {"source": f"AG2 + Gemini {model}", "summary": text[:1200], "risk_summary": "", "human_focus": ""}
+

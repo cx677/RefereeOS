@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from backend.agents import orchestrator
 
@@ -176,7 +176,6 @@ class BetaAsyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_beta_synthesis_with_mocked_agent(self) -> None:
         """_beta_synthesis() should call area_chair.ask and parse the result."""
-        from unittest.mock import AsyncMock
 
         class _FakeReply:
             body = '{"summary": "OK", "risk_summary": "Low", "human_focus": "Check methods"}'
@@ -184,34 +183,28 @@ class BetaAsyncTests(unittest.IsolatedAsyncioTestCase):
         mock_agent = AsyncMock()
         mock_agent.ask.return_value = _FakeReply()
 
-        from backend.agents.agent_factory import create_agents_for_synthesis
-        from autogen.beta.config import OpenAIConfig
-
-        fake_config = OpenAIConfig(model="deepseek-v4-pro", api_key="fake", base_url="https://api.deepseek.com/v1")
-        method_critic, area_chair = create_agents_for_synthesis(fake_config)
-
-        # Patch area_chair.ask to return a mock reply
-        with patch.object(area_chair, "ask", new_callable=AsyncMock) as mock_ask:
-            mock_ask.return_value = _FakeReply()
-            result = await orchestrator._beta_synthesis(
-                "test prompt",
-                {"model": "deepseek-v4-pro", "api_key": "fake",
-                 "api_type": "openai", "base_url": "https://api.deepseek.com/v1"},
-            )
+        with patch("backend.agents.agent_factory.create_agents_for_synthesis", return_value=(mock_agent, mock_agent)):
+            with patch("backend.agents.orchestrator._build_llm_config", return_value=None):
+                result = await orchestrator._beta_synthesis(
+                    "test prompt",
+                    {"model": "deepseek-v4-pro", "api_key": "fake",
+                     "api_type": "openai", "base_url": "https://api.deepseek.com/v1"},
+                )
         self.assertEqual(result["summary"], "OK")
         self.assertEqual(result["risk_summary"], "Low")
 
     async def test_ag2_area_chair_synthesis_with_mocked_beta(self) -> None:
         """_ag2_area_chair_synthesis() should delegate to _beta_synthesis."""
-        with patch.object(orchestrator, "_beta_synthesis", new_callable=AsyncMock) as mock_beta:
-            mock_beta.return_value = {"source": "test", "summary": "OK", "risk_summary": "", "human_focus": ""}
-            rt = orchestrator.AG2Runtime(True, "1.0", "test", [], True, "deepseek-v4-pro", "ready")
-            result = orchestrator._ag2_area_chair_synthesis(
-                {"paper": {}, "claims": [], "concerns": [], "repro_checks": []},
-                "Ready for human review",
-                ["CS"],
-                rt,
-            )
+        with patch.object(orchestrator, "_build_llm_config", return_value={"model": "deepseek-v4-pro", "api_key": "fake"}):
+            with patch.object(orchestrator, "_beta_synthesis", new_callable=AsyncMock) as mock_beta:
+                mock_beta.return_value = {"source": "test", "summary": "OK", "risk_summary": "", "human_focus": ""}
+                rt = orchestrator.AG2Runtime(True, "1.0", "test", [], True, "deepseek-v4-pro", "ready")
+                result = orchestrator._ag2_area_chair_synthesis(
+                    {"paper": {}, "claims": [], "concerns": [], "repro_checks": []},
+                    "Ready for human review",
+                    ["CS"],
+                    rt,
+                )
         self.assertEqual(result["summary"], "OK")
 
 
